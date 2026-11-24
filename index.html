@@ -48,6 +48,13 @@
     outline: 3px solid var(--ch2); outline-offset: 3px;
   }
   .filebtn { display: inline-flex; align-items: center; }
+  #rec::before {
+    content: ""; display: inline-block; width: 14px; height: 14px; margin-right: 10px;
+    border-radius: 50%; background: var(--ch1); vertical-align: -1px;
+  }
+  #rec.recording { background: var(--ch1); border-color: var(--ch1); color: #fff; font-variant-numeric: tabular-nums; }
+  #rec.recording::before { border-radius: 2px; background: #fff; }
+  [hidden] { display: none !important; }
   .filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .info { margin: 12px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -97,13 +104,16 @@
 <body>
 <main>
   <h1>ToyOut 音声づくり</h1>
-  <p class="lead">録音した声に、おもちゃを動かす合図を重ねます。できたファイルを DropTap のシンボルに貼り付けると、声が流れているあいだ、選んだ CH につないだおもちゃが動きます。</p>
+  <p class="lead">声に、おもちゃを動かす合図を重ねます。できたファイルを DropTap のシンボルに貼り付けると、声が流れているあいだ、選んだ CH につないだおもちゃが動きます。</p>
 
   <section class="step" id="step1">
-    <h2><span class="num">1</span>声のファイルを選ぶ</h2>
-    <label class="filebtn">ファイルを選ぶ
-      <input id="file" type="file" accept="audio/*,.wav,.m4a,.mp3,.aiff,.caf"></label>
-    <p class="info" id="fileInfo">ボイスメモなどで録音したファイル（m4a、wav など）</p>
+    <h2><span class="num">1</span>声を用意する</h2>
+    <div class="row">
+      <button id="rec">録音する</button>
+      <label class="filebtn">ファイルを選ぶ
+        <input id="file" type="file" accept="audio/*,.wav,.m4a,.mp3,.aiff,.caf"></label>
+    </div>
+    <p class="info" id="fileInfo">その場で録音するか、ボイスメモなどで録音したファイル（m4a、wav など）を選びます。</p>
   </section>
 
   <section class="step wait" id="step2">
@@ -122,7 +132,7 @@
       <button id="play" disabled>試しに再生</button>
       <button id="save" class="main" disabled>WAV を保存</button>
     </div>
-    <p class="info" id="outInfo">声のファイルと CH を選ぶと、ここで再生と保存ができます。</p>
+    <p class="info" id="outInfo">声と CH を選ぶと、ここで再生と保存ができます。</p>
     <p class="note"><span id="howto">保存したファイルは、ファイル App でコピーして、DropTap のシンボルに貼り付けます。</span>試しに再生すると、M5 も反応します。</p>
   </section>
 
@@ -182,30 +192,100 @@ function decode(arrayBuffer) {
 
 const nextPaint = () => new Promise(r => setTimeout(r, 30));
 
-$('file').addEventListener('change', async () => {
-  const f = $('file').files[0];
-  if (!f) return;
+function setInfo(text, err) {
+  $('fileInfo').className = err ? 'info err' : 'info';
+  $('fileInfo').textContent = text;
+}
+
+// Decodes a recording or a chosen file and prepares it as the speech.
+async function loadSpeech(getBuffer, name, label) {
   stop();
   speech = null; mixed = null;
-  $('fileInfo').className = 'info';
-  $('fileInfo').textContent = '読み込み中…';
+  setInfo('読み込み中…');
   refresh();
   await nextPaint();
   try {
-    const buf = await decode(await f.arrayBuffer());
+    const buf = await decode(await getBuffer());
     const x = new Float32Array(buf.length);
     for (let c = 0; c < buf.numberOfChannels; c++) {
       const d = buf.getChannelData(c);
       for (let i = 0; i < x.length; i++) x[i] += d[i] / buf.numberOfChannels;
     }
     speech = S.prepareSpeech(x, RATE, {});
-    baseName = f.name.replace(/\.[^.]+$/, '');
-    $('fileInfo').textContent = `${f.name}（${(speech.length / RATE).toFixed(1)} 秒）`;
+    baseName = name;
+    setInfo(`${label}（${(speech.length / RATE).toFixed(1)} 秒）`);
   } catch (e) {
-    $('fileInfo').className = 'info err';
-    $('fileInfo').textContent = 'このファイルは読み込めませんでした。m4a や wav の音声ファイルを選んでください。';
+    setInfo(label === '録音'
+      ? '録音を読み込めませんでした。もう一度録音してください。'
+      : 'このファイルは読み込めませんでした。m4a や wav の音声ファイルを選んでください。', true);
   }
   refresh();
+}
+
+$('file').addEventListener('change', () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  loadSpeech(() => f.arrayBuffer(), f.name.replace(/\.[^.]+$/, ''), f.name);
+  $('file').value = '';
+});
+
+// --- Recording (needs HTTPS) ---------------------------------------------------
+// The mic's voice processing is turned off so the voice keeps its natural
+// sound; prepareSpeech trims, low-passes and normalises it like a file.
+// Recording stops by itself at REC_MAX_S, the relay's max_on (§6).
+const REC_MAX_S = 30;
+const canRecord = !!(window.isSecureContext && navigator.mediaDevices &&
+  navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+let rec = null; // { mr, stream, t0, timer }
+
+if (!canRecord) $('rec').hidden = true;
+
+function setSession(type) {
+  if (navigator.audioSession) {
+    try { navigator.audioSession.type = type; } catch (e) { /* unsupported */ }
+  }
+}
+
+function recLabel() {
+  if (!rec) { $('rec').textContent = '録音する'; $('rec').classList.remove('recording'); return; }
+  const t = Math.floor((Date.now() - rec.t0) / 1000);
+  $('rec').textContent = `止める ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+  $('rec').classList.add('recording');
+  if (t >= REC_MAX_S && rec.mr.state === 'recording') rec.mr.stop();
+}
+
+$('rec').addEventListener('click', async () => {
+  if (rec) { if (rec.mr.state === 'recording') rec.mr.stop(); return; }
+  stop();
+  setSession('play-and-record');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+  } catch (e) {
+    setSession('playback');
+    setInfo('マイクを使えませんでした。設定 App の Safari で、マイクを「確認」か「許可」にしてください。', true);
+    return;
+  }
+  const mr = new MediaRecorder(stream);
+  const chunks = [];
+  mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => {
+    // Release the mic first, so playback goes back to the speaker at full level.
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(rec.timer);
+    rec = null;
+    setSession('playback');
+    recLabel();
+    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/mp4' });
+    const d = new Date(), two = (n) => String(n).padStart(2, '0');
+    loadSpeech(() => blob.arrayBuffer(), `録音_${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`, '録音');
+  };
+  rec = { mr, stream, t0: Date.now(), timer: setInterval(recLabel, 250) };
+  mr.start();
+  recLabel();
+  setInfo(`録音中です。話し終えたら「止める」を押してください（${REC_MAX_S} 秒で自動的に止まります）。`);
 });
 
 for (const b of document.querySelectorAll('.jack')) {
@@ -243,9 +323,7 @@ function refresh() {
 }
 
 async function unlock() {
-  if (navigator.audioSession) {
-    try { navigator.audioSession.type = 'playback'; } catch (e) { /* unsupported */ }
-  }
+  setSession('playback');
   if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
   await ctx.resume();
 }
@@ -261,6 +339,7 @@ function stop() {
 
 $('play').addEventListener('click', async () => {
   if (source) { stop(); return; }
+  if (rec) return;
   await unlock();
   const m = current();
   const buf = ctx.createBuffer(1, m.data.length, RATE);

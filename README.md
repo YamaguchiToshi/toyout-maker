@@ -1,6 +1,6 @@
 # ToyOut 音声づくり
 
-録音した声に、おもちゃを動かす合図（18.5〜19.5kHz の音）を重ねて、WAV ファイルを作る Web ページです。
+声に、おもちゃを動かす合図（18.5〜19.5kHz の音）を重ねて、WAV ファイルを作る Web ページです。
 
 https://yamaguchitoshi.github.io/toyout-maker/
 
@@ -8,7 +8,7 @@ https://yamaguchitoshi.github.io/toyout-maker/
 
 ## 使い方
 
-1. 声のファイル（ボイスメモの m4a、wav など）を選ぶ。
+1. その場で録音するか、声のファイル（ボイスメモの m4a、wav など）を選ぶ。録音は 30 秒で自動的に止まる。
 2. 動かす CH（1〜4）を選ぶ。
 3. 「試しに再生」で確かめ、「WAV を保存」で保存またはコピーして、DropTap のシンボルに貼り付ける。
 
