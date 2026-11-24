@@ -137,7 +137,7 @@
       <button id="save" class="main" disabled>WAV を保存</button>
     </div>
     <p class="info" id="outInfo">声と CH を選ぶと、ここで再生と保存ができます。</p>
-    <p class="note"><span id="howto">保存したファイルは、ファイル App でコピーして、DropTap のシンボルに貼り付けます。</span>試しに再生すると、M5 も反応します。</p>
+    <p class="note">「WAV を保存」を押して、確認が出たら「ダウンロード」を選ぶと、ファイル App の「ダウンロード」に入ります。そのファイルをコピーして、DropTap のシンボルに貼り付けます。試しに再生すると、M5 も反応します。</p>
   </section>
 
   <details>
@@ -164,18 +164,6 @@
 const S = window.ToyoutSignal;
 const RATE = S.WAV_SAMPLE_RATE;
 const $ = (id) => document.getElementById(id);
-
-// Over HTTPS (GitHub Pages) Safari hands the WAV to the share sheet; over plain
-// HTTP it downloads. The iPad share sheet offers no コピー for a WAV (checked
-// 2026-11-24), so the file is saved first and copied in the Files app.
-const canShareFiles = (() => {
-  try {
-    return !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'a.wav', { type: 'audio/wav' })] }));
-  } catch (e) { return false; }
-})();
-if (canShareFiles) {
-  $('howto').textContent = '「WAV を保存」で出てくる画面で「"ファイル"に保存」を選びます。保存したファイルをファイル App でコピーして、DropTap のシンボルに貼り付けます。';
-}
 
 let speech = null, baseName = '', ch = 0;
 let mixed = null, mixedKey = '';
@@ -370,26 +358,18 @@ async function playData(data, btn) {
 $('listen').addEventListener('click', () => playData(speech, $('listen')));
 $('play').addEventListener('click', () => playData(current().data, $('play')));
 
-$('save').addEventListener('click', async () => {
+// A plain download, not the share sheet: the iPad share sheet offers no コピー
+// for a WAV (checked 2026-11-24), and a download always lands in the Files
+// app's ダウンロード folder, where it is copied for DropTap.
+$('save').addEventListener('click', () => {
   const name = fileName();
   const blob = new Blob([S.encodeWav(current().data, RATE)], { type: 'audio/wav' });
-  // Over HTTPS, iPad offers the share sheet ("ファイル"に保存); otherwise download.
-  const file = typeof File === 'function' ? new File([blob], name, { type: 'audio/wav' }) : null;
-  if (file && canShareFiles && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      $('outInfo').textContent = `${name} を共有しました。`;
-      return;
-    } catch (e) {
-      if (e && e.name === 'AbortError') return;
-    }
-  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-  $('outInfo').textContent = `${name} を保存しました（ダウンロード）。`;
+  $('outInfo').textContent = `${name} をダウンロードしました。ファイル App の「ダウンロード」にあります。`;
 });
 </script>
 </body>
