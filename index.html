@@ -55,6 +55,7 @@
   #rec.recording { background: var(--ch1); border-color: var(--ch1); color: #fff; font-variant-numeric: tabular-nums; }
   #rec.recording::before { border-radius: 2px; background: #fff; }
   [hidden] { display: none !important; }
+  .listen { margin-top: 12px; }
   .filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .info { margin: 12px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -114,6 +115,9 @@
         <input id="file" type="file" accept="audio/*,.wav,.m4a,.mp3,.aiff,.caf"></label>
     </div>
     <p class="info" id="fileInfo">その場で録音するか、ボイスメモなどで録音したファイル（m4a、wav など）を選びます。</p>
+    <div class="row listen" id="listenRow" hidden>
+      <button id="listen">声を聞く</button>
+    </div>
   </section>
 
   <section class="step wait" id="step2">
@@ -174,7 +178,7 @@ if (canShareFiles) {
 
 let speech = null, baseName = '', ch = 0;
 let mixed = null, mixedKey = '';
-let ctx = null, source = null;
+let ctx = null, source = null, sourceBtn = null, fromRec = false;
 
 function opts() {
   const [headerMs, symbolMs] = $('timing').value.split(',').map(Number);
@@ -213,6 +217,7 @@ async function loadSpeech(getBuffer, name, label) {
     }
     speech = S.prepareSpeech(x, RATE, {});
     baseName = name;
+    fromRec = label === '録音';
     setInfo(`${label}（${(speech.length / RATE).toFixed(1)} 秒）`);
   } catch (e) {
     setInfo(label === '録音'
@@ -247,7 +252,7 @@ function setSession(type) {
 }
 
 function recLabel() {
-  if (!rec) { $('rec').textContent = '録音する'; $('rec').classList.remove('recording'); return; }
+  if (!rec) { $('rec').textContent = fromRec && speech ? '録り直す' : '録音する'; $('rec').classList.remove('recording'); return; }
   const t = Math.floor((Date.now() - rec.t0) / 1000);
   $('rec').textContent = `止める ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   $('rec').classList.add('recording');
@@ -284,7 +289,7 @@ $('rec').addEventListener('click', async () => {
   };
   rec = { mr, stream, t0: Date.now(), timer: setInterval(recLabel, 250) };
   mr.start();
-  recLabel();
+  refresh();
   setInfo(`録音中です。話し終えたら「止める」を押してください（${REC_MAX_S} 秒で自動的に止まります）。`);
 });
 
@@ -313,7 +318,9 @@ function refresh() {
   const ready = !!speech && ch > 0;
   $('step3').classList.toggle('wait', !ready);
   $('play').disabled = $('save').disabled = !ready;
-  $('play').textContent = source ? '止める' : '試しに再生';
+  $('listenRow').hidden = !speech;
+  $('listen').disabled = !!rec;
+  recLabel();
   if (ready) {
     const m = current();
     $('outInfo').textContent = `${fileName()}（${m.seconds.toFixed(1)} 秒）`;
@@ -328,29 +335,39 @@ async function unlock() {
   await ctx.resume();
 }
 
+const PLAY_LABEL = { play: '試しに再生', listen: '声を聞く' };
+
 function stop() {
   if (source) {
     source.onended = null;
     try { source.stop(); } catch (e) { /* already stopped */ }
     source = null;
   }
-  $('play').textContent = '試しに再生';
+  if (sourceBtn) sourceBtn.textContent = PLAY_LABEL[sourceBtn.id];
+  sourceBtn = null;
 }
 
-$('play').addEventListener('click', async () => {
-  if (source) { stop(); return; }
-  if (rec) return;
+// Plays data on the speaker; the button becomes 止める until it ends.
+async function playData(data, btn) {
+  const again = source && sourceBtn === btn;
+  stop();
+  if (again || rec) return;
   await unlock();
-  const m = current();
-  const buf = ctx.createBuffer(1, m.data.length, RATE);
-  buf.copyToChannel(m.data, 0);
+  const buf = ctx.createBuffer(1, data.length, RATE);
+  buf.copyToChannel(data, 0);
   source = ctx.createBufferSource();
   source.buffer = buf;
   source.connect(ctx.destination);
-  source.onended = () => { source = null; $('play').textContent = '試しに再生'; };
+  source.onended = stop;
   source.start(ctx.currentTime + 0.05);
-  $('play').textContent = '止める';
-});
+  sourceBtn = btn;
+  btn.textContent = '止める';
+}
+
+// 声を聞く plays the voice as it goes into the file (trimmed, low-passed,
+// normalised) without the signal; 試しに再生 plays the finished file.
+$('listen').addEventListener('click', () => playData(speech, $('listen')));
+$('play').addEventListener('click', () => playData(current().data, $('play')));
 
 $('save').addEventListener('click', async () => {
   const name = fileName();
