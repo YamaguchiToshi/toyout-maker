@@ -165,15 +165,16 @@ const S = window.ToyoutSignal;
 const RATE = S.WAV_SAMPLE_RATE;
 const $ = (id) => document.getElementById(id);
 
-// Over HTTPS (GitHub Pages) Safari can hand the WAV to the share sheet, whose
-// コピー puts it on the clipboard for DropTap; over plain HTTP it downloads.
+// Over HTTPS (GitHub Pages) Safari hands the WAV to the share sheet; over plain
+// HTTP it downloads. The iPad share sheet offers no コピー for a WAV (checked
+// 2026-11-24), so the file is saved first and copied in the Files app.
 const canShareFiles = (() => {
   try {
     return !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'a.wav', { type: 'audio/wav' })] }));
   } catch (e) { return false; }
 })();
 if (canShareFiles) {
-  $('howto').textContent = '「WAV を保存」で出てくる画面で「コピー」を選び、DropTap のシンボルに貼り付けます。「"ファイル"に保存」も選べます。';
+  $('howto').textContent = '「WAV を保存」で出てくる画面で「"ファイル"に保存」を選びます。保存したファイルをファイル App でコピーして、DropTap のシンボルに貼り付けます。';
 }
 
 let speech = null, baseName = '', ch = 0;
@@ -372,7 +373,7 @@ $('play').addEventListener('click', () => playData(current().data, $('play')));
 $('save').addEventListener('click', async () => {
   const name = fileName();
   const blob = new Blob([S.encodeWav(current().data, RATE)], { type: 'audio/wav' });
-  // Over HTTPS, iPad offers the share sheet (コピー / ファイルに保存); otherwise download.
+  // Over HTTPS, iPad offers the share sheet ("ファイル"に保存); otherwise download.
   const file = typeof File === 'function' ? new File([blob], name, { type: 'audio/wav' }) : null;
   if (file && canShareFiles && navigator.canShare({ files: [file] })) {
     try {
