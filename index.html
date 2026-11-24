@@ -153,7 +153,10 @@
     <div class="row">
       <label>合図の強さ <input id="level" type="number" value="-6" step="1" max="0" min="-40"> dBFS</label>
     </div>
-    <p class="note">合図の長さは、M5 の設定（画面左上の表示）と同じにしてください。ふだんは変える必要はありません。</p>
+    <div class="row">
+      <label><input id="compress" type="checkbox" checked> 声の大きさをそろえる（コンプレッサ）</label>
+    </div>
+    <p class="note">合図の長さは、M5 の設定（画面左上の表示）と同じにしてください。「声の大きさをそろえる」は、声の大きいところを抑えて全体を持ち上げ、聞こえやすくします。切ると、元の声の抑揚のままになります。ふだんは変える必要はありません。</p>
   </details>
 
 </main>
@@ -165,7 +168,7 @@ const S = window.ToyoutSignal;
 const RATE = S.WAV_SAMPLE_RATE;
 const $ = (id) => document.getElementById(id);
 
-let speech = null, baseName = '', ch = 0;
+let speech = null, rawSpeech = null, baseName = '', ch = 0;
 let mixed = null, mixedKey = '';
 let ctx = null, source = null, sourceBtn = null, fromRec = false;
 
@@ -193,7 +196,7 @@ function setInfo(text, err) {
 // Decodes a recording or a chosen file and prepares it as the speech.
 async function loadSpeech(getBuffer, name, label) {
   stop();
-  speech = null; mixed = null;
+  speech = null; rawSpeech = null; mixed = null;
   setInfo('読み込み中…');
   refresh();
   await nextPaint();
@@ -204,7 +207,8 @@ async function loadSpeech(getBuffer, name, label) {
       const d = buf.getChannelData(c);
       for (let i = 0; i < x.length; i++) x[i] += d[i] / buf.numberOfChannels;
     }
-    speech = S.prepareSpeech(x, RATE, {});
+    rawSpeech = x;
+    speech = S.prepareSpeech(x, RATE, { compress: $('compress').checked });
     baseName = name;
     fromRec = label === '録音';
     setInfo(`${label}（${(speech.length / RATE).toFixed(1)} 秒）`);
@@ -225,7 +229,7 @@ $('file').addEventListener('change', () => {
 
 // --- Recording (needs HTTPS) ---------------------------------------------------
 // The mic's voice processing is turned off so the voice keeps its natural
-// sound; prepareSpeech trims, low-passes and normalises it like a file.
+// sound; prepareSpeech trims, compresses, low-passes and normalises it like a file.
 // Recording stops by itself at REC_MAX_S, the relay's max_on (§6).
 const REC_MAX_S = 30;
 const canRecord = !!(window.isSecureContext && navigator.mediaDevices &&
@@ -292,6 +296,11 @@ for (const b of document.querySelectorAll('.jack')) {
 }
 $('timing').addEventListener('change', () => { stop(); refresh(); });
 $('level').addEventListener('change', () => { stop(); refresh(); });
+$('compress').addEventListener('change', () => {
+  stop();
+  if (rawSpeech) { speech = S.prepareSpeech(rawSpeech, RATE, { compress: $('compress').checked }); mixed = null; }
+  refresh();
+});
 
 function current() {
   const o = opts();

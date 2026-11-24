@@ -17,8 +17,19 @@
 
   const DEFAULTS = {
     headerMs: 80, symbolMs: 50, repeatMs: 1000,
-    levelDb: -6, speechPeakDb: -3, lpf: true, trim: true,
+    levelDb: -6, speechPeakDb: -3, lpf: true, trim: true, compress: true,
   };
+
+  // Speech dynamics (compress): a voice's peaks sit ~18 dB above its average,
+  // so peak normalisation alone leaves it quiet. A slow compressor evens out
+  // loud and soft syllables, then a look-ahead limiter shaves the short peaks.
+  const COMP_WIN_S = 0.020;      // level detector: RMS over 20 ms, centred
+  const COMP_BELOW_DB = 18;      // threshold: this far below the loud (95th percentile) level
+  const COMP_RATIO = 5;
+  const COMP_ATTACK_S = 0.005;
+  const COMP_RELEASE_S = 0.080;
+  const LIMIT_CREST_DB = 7;     // limiter ceiling above the loud level
+  const LIMIT_WIN_S = 0.0015;
 
   // Phase-continuous tones with fades only at the start and end.
   function synthSteps(steps, rate, amp) {
@@ -115,10 +126,76 @@
     return x.slice(Math.max(0, first * win - pad), Math.min(x.length, (last + 1) * win + pad));
   }
 
-  // Mono speech at `rate` → trimmed, low-passed and peak-normalised copy.
+  // Running maximum/minimum or mean over a centred window of 2h+1 samples.
+  function slide(x, h, kind) {
+    const n = x.length, out = new Float32Array(n);
+    if (kind === 'mean') {
+      const c = new Float64Array(n + 1);
+      for (let i = 0; i < n; i++) c[i + 1] = c[i] + x[i];
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(0, i - h), b = Math.min(n, i + h + 1);
+        out[i] = (c[b] - c[a]) / (b - a);
+      }
+      return out;
+    }
+    // Running minimum (van Herk / Gil-Werman, blocks of 2h+1). Near the ends it
+    // may include a few samples outside the window, which only lowers the gain.
+    const w = 2 * h + 1, pre = new Float32Array(n), suf = new Float32Array(n);
+    for (let i = 0; i < n; i++) pre[i] = i % w === 0 ? x[i] : Math.min(pre[i - 1], x[i]);
+    for (let i = n - 1; i >= 0; i--) suf[i] = (i % w === w - 1 || i === n - 1) ? x[i] : Math.min(suf[i + 1], x[i]);
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - h), b = Math.min(n - 1, i + h);
+      out[i] = Math.min(suf[a], pre[b]);
+    }
+    return out;
+  }
+
+  function compressSpeech(x, rate) {
+    const n = x.length;
+    if (n === 0) return x;
+    const sq = new Float32Array(n);
+    for (let i = 0; i < n; i++) sq[i] = x[i] * x[i];
+    const ms = slide(sq, Math.round(COMP_WIN_S * rate / 2), 'mean');
+    const lv = new Float32Array(n);
+    for (let i = 0; i < n; i++) lv[i] = 10 * Math.log10(ms[i] + 1e-12);
+    // The loud level: 95th percentile of the detector, sampled every 5 ms.
+    const pts = [];
+    for (let i = 0; i < n; i += Math.round(0.005 * rate)) pts.push(lv[i]);
+    pts.sort((a, b) => a - b);
+    const loud = pts[Math.floor(pts.length * 0.95)];
+    const th = loud - COMP_BELOW_DB;
+    // Gain in dB with attack/release smoothing, run forwards then backwards so
+    // it starts falling before a loud syllable (look-ahead, offline).
+    const target = new Float32Array(n);
+    for (let i = 0; i < n; i++) target[i] = lv[i] > th ? (th - lv[i]) * (1 - 1 / COMP_RATIO) : 0;
+    const a = Math.exp(-1 / (COMP_ATTACK_S * rate)), r = Math.exp(-1 / (COMP_RELEASE_S * rate));
+    const g = new Float32Array(n);
+    let s = 0;
+    for (let i = 0; i < n; i++) { const c = target[i] < s ? a : r; s = c * s + (1 - c) * target[i]; g[i] = s; }
+    s = 0;
+    for (let i = n - 1; i >= 0; i--) { const c = g[i] < s ? a : r; s = c * s + (1 - c) * g[i]; g[i] = Math.min(g[i], s); }
+    const y = new Float32Array(n);
+    for (let i = 0; i < n; i++) y[i] = x[i] * Math.pow(10, g[i] / 20);
+    // Limiter: ceiling LIMIT_CREST_DB above the compressed loud level. The
+    // needed gain is min-filtered, then averaged over the same width, so it
+    // reaches its floor across each peak without clicks.
+    const loudAfter = loud - (loud - th) * (1 - 1 / COMP_RATIO);
+    const ceil = Math.pow(10, (loudAfter + LIMIT_CREST_DB) / 20);
+    const need = new Float32Array(n);
+    for (let i = 0; i < n; i++) need[i] = Math.min(1, ceil / (Math.abs(y[i]) + 1e-12));
+    const h = Math.max(1, Math.round(LIMIT_WIN_S * rate));
+    const lim = slide(slide(need, h, 'min'), h, 'mean');
+    for (let i = 0; i < n; i++) y[i] *= lim[i];
+    return y;
+  }
+
+  // Mono speech at `rate` → trimmed, compressed, low-passed and peak-normalised
+  // copy. The low-pass comes after the compressor and limiter, so whatever they
+  // add above 17 kHz is removed before the signal goes in.
   function prepareSpeech(x, rate, opts) {
     const o = Object.assign({}, DEFAULTS, opts);
     if (o.trim) x = trimSilence(x, rate);
+    if (o.compress) x = compressSpeech(x, rate);
     if (o.lpf) x = firFilter(x, lowpassTaps(rate));
     let peak = 0;
     for (const v of x) peak = Math.max(peak, Math.abs(v));
@@ -129,7 +206,8 @@
   }
 
   // Speech with the channel's signal mixed in from the start to the end of the
-  // speech (overlay, §9 stage 3). Scales everything down if it would clip.
+  // speech (overlay, §9 stage 3). Scales everything down if it would clip
+  // (about −1 to −2 dB with the defaults; stages 3 and 5 were measured so).
   function mix(speech, rate, ch, opts) {
     const o = Object.assign({}, DEFAULTS, opts);
     const cmdLen = (o.headerMs + 3 * o.symbolMs) / 1000;
