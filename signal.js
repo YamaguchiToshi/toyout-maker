@@ -1,0 +1,175 @@
+// ToyOut signal generation (SPECIFICATION.md §4, §10), without any DOM code,
+// so the page and Node test scripts share it. The defaults are the settings
+// verified on hardware in stages 3 and 5: overlay, 17 kHz low-pass on the
+// speech, header/symbol 80/50 ms, the command repeated every 1000 ms, signal
+// −6 dBFS, speech peak −3 dBFS.
+(function (root) {
+  'use strict';
+
+  const SYMBOL_HZ = [18500, 18750, 19000, 19250, 19500];
+  const CH_SEQ = { 1: [0, 1, 2, 1], 2: [0, 1, 4, 3], 3: [0, 3, 2, 3], 4: [0, 3, 4, 1] };
+  const PILOT_STEP_S = 0.050;
+  const RAMP_S = 0.010;
+  const WAV_SAMPLE_RATE = 48000;
+  const LPF_CUTOFF_HZ = 16875; // passband to ~16.5 kHz, ≥70 dB down from ~17.2 kHz
+  const LPF_TAPS = 301;
+  const LPF_BETA = 6.8;
+
+  const DEFAULTS = {
+    headerMs: 80, symbolMs: 50, repeatMs: 1000,
+    levelDb: -6, speechPeakDb: -3, lpf: true, trim: true,
+  };
+
+  // Phase-continuous tones with fades only at the start and end.
+  function synthSteps(steps, rate, amp) {
+    const total = steps.reduce((n, s) => n + Math.round(s.dur * rate), 0);
+    const out = new Float32Array(total);
+    const ramp = Math.round(RAMP_S * rate);
+    let phase = 0, i = 0;
+    for (const s of steps) {
+      const n = Math.round(s.dur * rate);
+      const dphi = 2 * Math.PI * s.freq / rate;
+      for (let k = 0; k < n; k++, i++) {
+        out[i] = amp * Math.sin(phase);
+        phase += dphi;
+        if (phase > 2 * Math.PI) phase -= 2 * Math.PI;
+      }
+    }
+    for (let k = 0; k < ramp && k < total; k++) {
+      const g = 0.5 - 0.5 * Math.cos(Math.PI * k / ramp);
+      out[k] *= g;
+      out[total - 1 - k] *= g;
+    }
+    return out;
+  }
+
+  // Command, then the pilot, with the command re-inserted every repeatMs from
+  // the start while a whole command still fits (§4.1). Lasts `total` seconds.
+  function messageSteps(ch, total, o) {
+    const hdr = o.headerMs / 1000, sym = o.symbolMs / 1000, repeat = o.repeatMs / 1000;
+    const cmdLen = hdr + 3 * sym;
+    const cmd = CH_SEQ[ch].map((k, i) => ({ freq: SYMBOL_HZ[k], dur: i === 0 ? hdr : sym }));
+    const steps = [];
+    let t = 0;
+    for (let r = 1; ; r++) {
+      steps.push(...cmd);
+      t += cmdLen;
+      const next = repeat > 0 ? r * repeat : Infinity;
+      const again = next >= t - 1e-9 && next + cmdLen <= total + 1e-9;
+      const until = again ? next : total;
+      for (let k = 0; t < until - 1e-9; t += PILOT_STEP_S, k++) {
+        steps.push({ freq: SYMBOL_HZ[k % 2 ? 4 : 2], dur: Math.min(PILOT_STEP_S, until - t) });
+      }
+      t = until;
+      if (!again) break;
+    }
+    return steps;
+  }
+
+  function besselI0(x) {
+    let sum = 1, term = 1;
+    for (let k = 1; k < 50; k++) { term *= (x / (2 * k)) ** 2; sum += term; if (term < 1e-12 * sum) break; }
+    return sum;
+  }
+
+  function lowpassTaps(rate) {
+    const h = new Float32Array(LPF_TAPS), m = (LPF_TAPS - 1) / 2, fc = LPF_CUTOFF_HZ / rate;
+    let sum = 0;
+    for (let n = 0; n < LPF_TAPS; n++) {
+      const x = n - m;
+      const sinc = x === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * x) / (Math.PI * x);
+      h[n] = sinc * besselI0(LPF_BETA * Math.sqrt(1 - (x / m) ** 2)) / besselI0(LPF_BETA);
+      sum += h[n];
+    }
+    for (let n = 0; n < LPF_TAPS; n++) h[n] /= sum;
+    return h;
+  }
+
+  // Linear-phase FIR with the delay removed.
+  function firFilter(x, h) {
+    const m = (h.length - 1) / 2, out = new Float32Array(x.length);
+    for (let n = 0; n < x.length; n++) {
+      let acc = 0;
+      const k0 = Math.max(0, n + m - (x.length - 1)), k1 = Math.min(h.length - 1, n + m);
+      for (let k = k0; k <= k1; k++) acc += h[k] * x[n + m - k];
+      out[n] = acc;
+    }
+    return out;
+  }
+
+  // Drops leading and trailing silence (40 dB below the loudest 10 ms), keeping 50 ms.
+  function trimSilence(x, rate) {
+    const win = Math.round(0.010 * rate), pad = Math.round(0.050 * rate);
+    const rms = [];
+    for (let i = 0; i + win <= x.length; i += win) {
+      let e = 0;
+      for (let k = 0; k < win; k++) e += x[i + k] * x[i + k];
+      rms.push(10 * Math.log10(e / win + 1e-20));
+    }
+    if (!rms.length) return x;
+    const th = Math.max(...rms) - 40;
+    const first = rms.findIndex(v => v > th);
+    if (first < 0) return x;
+    let last = rms.length - 1;
+    while (last > 0 && rms[last] <= th) last--;
+    return x.slice(Math.max(0, first * win - pad), Math.min(x.length, (last + 1) * win + pad));
+  }
+
+  // Mono speech at `rate` → trimmed, low-passed and peak-normalised copy.
+  function prepareSpeech(x, rate, opts) {
+    const o = Object.assign({}, DEFAULTS, opts);
+    if (o.trim) x = trimSilence(x, rate);
+    if (o.lpf) x = firFilter(x, lowpassTaps(rate));
+    let peak = 0;
+    for (const v of x) peak = Math.max(peak, Math.abs(v));
+    const out = new Float32Array(x.length);
+    const g = peak > 0 ? Math.pow(10, o.speechPeakDb / 20) / peak : 1;
+    for (let i = 0; i < x.length; i++) out[i] = x[i] * g;
+    return out;
+  }
+
+  // Speech with the channel's signal mixed in from the start to the end of the
+  // speech (overlay, §9 stage 3). Scales everything down if it would clip.
+  function mix(speech, rate, ch, opts) {
+    const o = Object.assign({}, DEFAULTS, opts);
+    const cmdLen = (o.headerMs + 3 * o.symbolMs) / 1000;
+    const total = Math.max(speech.length / rate, cmdLen + 0.1);
+    const out = new Float32Array(Math.round(total * rate));
+    out.set(speech.subarray(0, out.length));
+    const sig = synthSteps(messageSteps(ch, total, o), rate, Math.pow(10, o.levelDb / 20));
+    for (let i = 0; i < Math.min(sig.length, out.length); i++) out[i] += sig[i];
+    let peak = 0;
+    for (const v of out) peak = Math.max(peak, Math.abs(v));
+    let scaleDb = 0;
+    if (peak > 0.98) {
+      const g = 0.98 / peak;
+      for (let i = 0; i < out.length; i++) out[i] *= g;
+      scaleDb = 20 * Math.log10(g);
+    }
+    return { data: out, seconds: total, scaleDb };
+  }
+
+  // 16-bit PCM mono WAV.
+  function encodeWav(samples, rate) {
+    const bytes = 44 + samples.length * 2;
+    const v = new DataView(new ArrayBuffer(bytes));
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, bytes - 8, true); str(8, 'WAVE');
+    str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+      const x = Math.max(-1, Math.min(1, samples[i]));
+      v.setInt16(44 + i * 2, Math.round(x * 32767), true);
+    }
+    return v.buffer;
+  }
+
+  const api = {
+    SYMBOL_HZ, CH_SEQ, WAV_SAMPLE_RATE, DEFAULTS,
+    synthSteps, messageSteps, lowpassTaps, firFilter, trimSilence, prepareSpeech, mix, encodeWav,
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.ToyoutSignal = api;
+})(typeof self !== 'undefined' ? self : this);

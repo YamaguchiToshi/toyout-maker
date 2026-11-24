@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ToyOut 音声づくり</title>
+<style>
+  :root {
+    --bg: #f1f4f7;
+    --ink: #1e2a36;
+    --muted: #5b6b7a;
+    --line: #d5dde5;
+    --card: #ffffff;
+    --ch1: #e5484d;
+    --ch2: #2f7fe0;
+    --ch3: #f0b429;
+    --ch4: #2ba471;
+    --sel: var(--ink);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Hiragino Maru Gothic ProN", "Hiragino Sans", system-ui, sans-serif;
+    font-size: 17px; line-height: 1.6;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 1.75rem; line-height: 1.3; margin: 0 0 4px; letter-spacing: .02em; }
+  .lead { color: var(--muted); margin: 0 0 24px; }
+
+  .step { background: var(--card); border-radius: 20px; padding: 20px; margin: 0 0 14px; }
+  .step h2 { display: flex; align-items: center; gap: 12px; font-size: 1.2rem; margin: 0 0 14px; }
+  .num {
+    flex: none; width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--ink); color: #fff; font-size: 1rem;
+  }
+  .step.wait .num { background: var(--line); color: var(--muted); }
+  .step.wait h2 { color: var(--muted); }
+
+  button, .filebtn {
+    font: inherit; color: inherit; cursor: pointer;
+    min-height: 52px; padding: 10px 22px; border-radius: 14px;
+    border: 2px solid var(--ink); background: transparent;
+  }
+  button:disabled { opacity: .35; cursor: default; }
+  button.main { background: var(--ink); color: #fff; }
+  button:focus-visible, .filebtn:focus-within, .jack:focus-visible {
+    outline: 3px solid var(--ch2); outline-offset: 3px;
+  }
+  .filebtn { display: inline-flex; align-items: center; }
+  .filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .info { margin: 12px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .info.err { color: var(--ch1); }
+
+  /* The channel picker: four sockets, coloured like the cables they drive. */
+  .jacks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .jack {
+    --c: var(--ink);
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 14px 4px 10px; border: 2px solid transparent; border-radius: 18px;
+    background: transparent; min-height: 0;
+  }
+  .jack .socket {
+    width: 72px; height: 72px; border-radius: 50%; background: var(--c);
+    display: grid; place-items: center;
+    transition: transform .15s ease;
+  }
+  .jack .socket::after {
+    content: ""; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--card); box-shadow: inset 0 0 0 6px #0003;
+  }
+  .jack .label { font-size: 1.05rem; }
+  .jack[aria-checked="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 10%, transparent); }
+  .jack[aria-checked="true"] .socket { transform: scale(1.08); }
+  .jack[aria-checked="true"] .socket::after { background: var(--ink); box-shadow: 0 0 0 5px var(--card); }
+  .jack[data-ch="1"] { --c: var(--ch1); }
+  .jack[data-ch="2"] { --c: var(--ch2); }
+  .jack[data-ch="3"] { --c: var(--ch3); }
+  .jack[data-ch="4"] { --c: var(--ch4); }
+
+  details { margin: 22px 4px 0; color: var(--muted); }
+  summary { cursor: pointer; padding: 10px 0; }
+  details .row { margin: 8px 0; }
+  select, input[type=number] { font: inherit; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input[type=number] { width: 5.5em; }
+  .note { font-size: .9rem; color: var(--muted); margin: 8px 0 0; }
+
+  @media (max-width: 480px) {
+    .jacks { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .jack .socket { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>ToyOut 音声づくり</h1>
+  <p class="lead">録音した声に、おもちゃを動かす合図を重ねます。できたファイルを DropTap のシンボルに貼り付けると、声が流れているあいだ、選んだ CH につないだおもちゃが動きます。</p>
+
+  <section class="step" id="step1">
+    <h2><span class="num">1</span>声のファイルを選ぶ</h2>
+    <label class="filebtn">ファイルを選ぶ
+      <input id="file" type="file" accept="audio/*,.wav,.m4a,.mp3,.aiff,.caf"></label>
+    <p class="info" id="fileInfo">ボイスメモなどで録音したファイル（m4a、wav など）</p>
+  </section>
+
+  <section class="step wait" id="step2">
+    <h2><span class="num">2</span>動かす CH を選ぶ</h2>
+    <div class="jacks" role="radiogroup" aria-label="CH">
+      <button class="jack" data-ch="1" role="radio" aria-checked="false"><span class="socket"></span><span class="label">CH1</span></button>
+      <button class="jack" data-ch="2" role="radio" aria-checked="false"><span class="socket"></span><span class="label">CH2</span></button>
+      <button class="jack" data-ch="3" role="radio" aria-checked="false"><span class="socket"></span><span class="label">CH3</span></button>
+      <button class="jack" data-ch="4" role="radio" aria-checked="false"><span class="socket"></span><span class="label">CH4</span></button>
+    </div>
+  </section>
+
+  <section class="step wait" id="step3">
+    <h2><span class="num">3</span>聞いて確かめて、保存する</h2>
+    <div class="row">
+      <button id="play" disabled>試しに再生</button>
+      <button id="save" class="main" disabled>WAV を保存</button>
+    </div>
+    <p class="info" id="outInfo">声のファイルと CH を選ぶと、ここで再生と保存ができます。</p>
+    <p class="note"><span id="howto">保存したファイルは、ファイル App でコピーして、DropTap のシンボルに貼り付けます。</span>試しに再生すると、M5 も反応します。</p>
+  </section>
+
+  <details>
+    <summary>設定</summary>
+    <div class="row">
+      <label>合図の長さ（ヘッダ/記号）
+        <select id="timing">
+          <option value="80,50" selected>80 / 50 ms</option>
+          <option value="60,40">60 / 40 ms</option>
+          <option value="50,30">50 / 30 ms</option>
+        </select></label>
+    </div>
+    <div class="row">
+      <label>合図の強さ <input id="level" type="number" value="-6" step="1" max="0" min="-40"> dBFS</label>
+    </div>
+    <p class="note">合図の長さは、M5 の設定（画面左上の表示）と同じにしてください。ふだんは変える必要はありません。</p>
+  </details>
+
+</main>
+
+<script src="signal.js"></script>
+<script>
+'use strict';
+const S = window.ToyoutSignal;
+const RATE = S.WAV_SAMPLE_RATE;
+const $ = (id) => document.getElementById(id);
+
+// Over HTTPS (GitHub Pages) Safari can hand the WAV to the share sheet, whose
+// コピー puts it on the clipboard for DropTap; over plain HTTP it downloads.
+const canShareFiles = (() => {
+  try {
+    return !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'a.wav', { type: 'audio/wav' })] }));
+  } catch (e) { return false; }
+})();
+if (canShareFiles) {
+  $('howto').textContent = '「WAV を保存」で出てくる画面で「コピー」を選び、DropTap のシンボルに貼り付けます。「"ファイル"に保存」も選べます。';
+}
+
+let speech = null, baseName = '', ch = 0;
+let mixed = null, mixedKey = '';
+let ctx = null, source = null;
+
+function opts() {
+  const [headerMs, symbolMs] = $('timing').value.split(',').map(Number);
+  const levelDb = Math.min(0, Math.max(-40, Number($('level').value) || S.DEFAULTS.levelDb));
+  return { headerMs, symbolMs, levelDb };
+}
+
+function decode(arrayBuffer) {
+  const oc = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, RATE);
+  return new Promise((resolve, reject) => {
+    const p = oc.decodeAudioData(arrayBuffer, resolve, reject);
+    if (p && p.then) p.then(resolve, reject);
+  });
+}
+
+const nextPaint = () => new Promise(r => setTimeout(r, 30));
+
+$('file').addEventListener('change', async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  stop();
+  speech = null; mixed = null;
+  $('fileInfo').className = 'info';
+  $('fileInfo').textContent = '読み込み中…';
+  refresh();
+  await nextPaint();
+  try {
+    const buf = await decode(await f.arrayBuffer());
+    const x = new Float32Array(buf.length);
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < x.length; i++) x[i] += d[i] / buf.numberOfChannels;
+    }
+    speech = S.prepareSpeech(x, RATE, {});
+    baseName = f.name.replace(/\.[^.]+$/, '');
+    $('fileInfo').textContent = `${f.name}（${(speech.length / RATE).toFixed(1)} 秒）`;
+  } catch (e) {
+    $('fileInfo').className = 'info err';
+    $('fileInfo').textContent = 'このファイルは読み込めませんでした。m4a や wav の音声ファイルを選んでください。';
+  }
+  refresh();
+});
+
+for (const b of document.querySelectorAll('.jack')) {
+  b.addEventListener('click', () => {
+    ch = Number(b.dataset.ch);
+    for (const o of document.querySelectorAll('.jack')) o.setAttribute('aria-checked', String(o === b));
+    stop();
+    refresh();
+  });
+}
+$('timing').addEventListener('change', () => { stop(); refresh(); });
+$('level').addEventListener('change', () => { stop(); refresh(); });
+
+function current() {
+  const o = opts();
+  const key = [ch, o.headerMs, o.symbolMs, o.levelDb].join();
+  if (!mixed || mixedKey !== key) { mixed = S.mix(speech, RATE, ch, o); mixedKey = key; }
+  return mixed;
+}
+
+function fileName() { return `${baseName}_CH${ch}.wav`; }
+
+function refresh() {
+  $('step2').classList.toggle('wait', !speech);
+  const ready = !!speech && ch > 0;
+  $('step3').classList.toggle('wait', !ready);
+  $('play').disabled = $('save').disabled = !ready;
+  $('play').textContent = source ? '止める' : '試しに再生';
+  if (ready) {
+    const m = current();
+    $('outInfo').textContent = `${fileName()}（${m.seconds.toFixed(1)} 秒）`;
+  } else if (speech) {
+    $('outInfo').textContent = '動かす CH を選んでください。';
+  }
+}
+
+async function unlock() {
+  if (navigator.audioSession) {
+    try { navigator.audioSession.type = 'playback'; } catch (e) { /* unsupported */ }
+  }
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+}
+
+function stop() {
+  if (source) {
+    source.onended = null;
+    try { source.stop(); } catch (e) { /* already stopped */ }
+    source = null;
+  }
+  $('play').textContent = '試しに再生';
+}
+
+$('play').addEventListener('click', async () => {
+  if (source) { stop(); return; }
+  await unlock();
+  const m = current();
+  const buf = ctx.createBuffer(1, m.data.length, RATE);
+  buf.copyToChannel(m.data, 0);
+  source = ctx.createBufferSource();
+  source.buffer = buf;
+  source.connect(ctx.destination);
+  source.onended = () => { source = null; $('play').textContent = '試しに再生'; };
+  source.start(ctx.currentTime + 0.05);
+  $('play').textContent = '止める';
+});
+
+$('save').addEventListener('click', async () => {
+  const name = fileName();
+  const blob = new Blob([S.encodeWav(current().data, RATE)], { type: 'audio/wav' });
+  // Over HTTPS, iPad offers the share sheet (コピー / ファイルに保存); otherwise download.
+  const file = typeof File === 'function' ? new File([blob], name, { type: 'audio/wav' }) : null;
+  if (file && canShareFiles && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      $('outInfo').textContent = `${name} を共有しました。`;
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  $('outInfo').textContent = `${name} を保存しました（ダウンロード）。`;
+});
+</script>
+</body>
+</html>
