@@ -30,6 +30,15 @@
   const COMP_RELEASE_S = 0.080;
   const LIMIT_CREST_DB = 7;     // limiter ceiling above the loud level
   const LIMIT_WIN_S = 0.0015;
+  // Gate (downward expander): compression lifts room noise between and before
+  // words more than the voice, so levels near the noise floor are pushed down.
+  const GATE_ABOVE_NOISE_DB = 12; // threshold: this far above the noise floor (10th percentile) ...
+  const GATE_MIN_BELOW_DB = 30;  // ... but at least this far below the loud level
+  const GATE_MAX_BELOW_DB = 50;  // ... and at most this far
+  const GATE_SLOPE = 3;          // dB of cut per dB below the threshold (1:4)
+  const GATE_RANGE_DB = 20;
+  const GATE_OPEN_S = 0.002;
+  const GATE_CLOSE_S = 0.100;
 
   // Phase-continuous tones with fades only at the start and end.
   function synthSteps(steps, rate, amp) {
@@ -108,7 +117,9 @@
     return out;
   }
 
-  // Drops leading and trailing silence (40 dB below the loudest 10 ms), keeping 50 ms.
+  // Drops leading and trailing silence, keeping 50 ms. Silence is 40 dB below
+  // the loudest 10 ms, or, in a noisy recording, up to 10 dB above the noise
+  // floor (10th percentile), but never closer than 30 dB to the loudest.
   function trimSilence(x, rate) {
     const win = Math.round(0.010 * rate), pad = Math.round(0.050 * rate);
     const rms = [];
@@ -118,7 +129,9 @@
       rms.push(10 * Math.log10(e / win + 1e-20));
     }
     if (!rms.length) return x;
-    const th = Math.max(...rms) - 40;
+    const top = Math.max(...rms);
+    const noise = [...rms].sort((a, b) => a - b)[Math.floor(rms.length * 0.10)];
+    const th = Math.max(top - 40, Math.min(noise + 10, top - 30));
     const first = rms.findIndex(v => v > th);
     if (first < 0) return x;
     let last = rms.length - 1;
@@ -174,6 +187,18 @@
     for (let i = 0; i < n; i++) { const c = target[i] < s ? a : r; s = c * s + (1 - c) * target[i]; g[i] = s; }
     s = 0;
     for (let i = n - 1; i >= 0; i--) { const c = g[i] < s ? a : r; s = c * s + (1 - c) * g[i]; g[i] = Math.min(g[i], s); }
+    // Gate: opens fast and closes slowly, forwards and backwards (the more open
+    // of the two), so it opens just before a word and closes after it.
+    const noise = pts[Math.floor(pts.length * 0.10)];
+    const gth = Math.min(loud - GATE_MIN_BELOW_DB, Math.max(noise + GATE_ABOVE_NOISE_DB, loud - GATE_MAX_BELOW_DB));
+    const go = Math.exp(-1 / (GATE_OPEN_S * rate)), gc = Math.exp(-1 / (GATE_CLOSE_S * rate));
+    const gt = new Float32Array(n);
+    for (let i = 0; i < n; i++) gt[i] = lv[i] < gth ? Math.max(-GATE_RANGE_DB, (lv[i] - gth) * GATE_SLOPE) : 0;
+    const gf = new Float32Array(n);
+    s = gt[0];
+    for (let i = 0; i < n; i++) { const c = gt[i] > s ? go : gc; s = c * s + (1 - c) * gt[i]; gf[i] = s; }
+    s = gt[n - 1];
+    for (let i = n - 1; i >= 0; i--) { const c = gt[i] > s ? go : gc; s = c * s + (1 - c) * gt[i]; g[i] += Math.max(gf[i], s); }
     const y = new Float32Array(n);
     for (let i = 0; i < n; i++) y[i] = x[i] * Math.pow(10, g[i] / 20);
     // Limiter: ceiling LIMIT_CREST_DB above the compressed loud level. The
