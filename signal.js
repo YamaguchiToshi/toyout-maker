@@ -117,9 +117,11 @@
     return out;
   }
 
-  // Drops leading and trailing silence, keeping 50 ms. Silence is 40 dB below
-  // the loudest 10 ms, or, in a noisy recording, up to 10 dB above the noise
-  // floor (10th percentile), but never closer than 30 dB to the loudest.
+  // Drops the room sound before the first word and after the last one. It
+  // finds the first and last clearly voiced 10 ms frames, walks outwards while
+  // the level stays above the noise (soft onsets and word endings), then keeps
+  // 50 ms more, faded in and out, so isolated room sounds (a tap, a rustle)
+  // before the voice are cut instead of being lifted by the compressor.
   function trimSilence(x, rate) {
     const win = Math.round(0.010 * rate), pad = Math.round(0.050 * rate);
     const rms = [];
@@ -131,12 +133,24 @@
     if (!rms.length) return x;
     const top = Math.max(...rms);
     const noise = [...rms].sort((a, b) => a - b)[Math.floor(rms.length * 0.10)];
-    const th = Math.max(top - 40, Math.min(noise + 10, top - 30));
-    const first = rms.findIndex(v => v > th);
+    const strong = Math.max(top - 30, Math.min(noise + 15, top - 20));
+    const low = Math.min(strong - 6, Math.max(top - 45, noise + 6));
+    let first = rms.findIndex(v => v > strong);
     if (first < 0) return x;
     let last = rms.length - 1;
-    while (last > 0 && rms[last] <= th) last--;
-    return x.slice(Math.max(0, first * win - pad), Math.min(x.length, (last + 1) * win + pad));
+    while (rms[last] <= strong) last--;
+    // Walk outwards, stepping over a single quiet frame.
+    const above = i => i >= 0 && i < rms.length && rms[i] > low;
+    while (above(first - 1) || above(first - 2)) first--;
+    while (above(last + 1) || above(last + 2)) last++;
+    first = Math.max(0, first); last = Math.min(rms.length - 1, last);
+    const v0 = first * win, v1 = Math.min(x.length, (last + 1) * win);
+    const start = Math.max(0, v0 - pad), end = Math.min(x.length, v1 + pad);
+    const y = x.slice(start, end);
+    const fin = v0 - start, fout = end - v1;
+    for (let i = 0; i < fin; i++) y[i] *= 0.5 - 0.5 * Math.cos(Math.PI * i / fin);
+    for (let i = 0; i < fout; i++) y[y.length - 1 - i] *= 0.5 - 0.5 * Math.cos(Math.PI * i / fout);
+    return y;
   }
 
   // Running maximum/minimum or mean over a centred window of 2h+1 samples.
